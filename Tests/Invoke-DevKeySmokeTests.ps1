@@ -1,6 +1,8 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 $script:Failures=New-Object System.Collections.Generic.List[string]
 $script:Passes=0
+$script:Skipped=0
+function Skip-DevKeyTest([string]$Name){$script:Skipped++;Write-Host "SKIP $Name" -ForegroundColor Yellow}
 function Assert-DevKeyTest([bool]$Condition,[string]$Name){if($Condition){$script:Passes++;Write-Host "PASS $Name" -ForegroundColor Green}else{$script:Failures.Add($Name);Write-Host "FAIL $Name" -ForegroundColor Red}}
 function Pause-DevKey {}
 function Pause {}
@@ -8,15 +10,13 @@ $script:PromptQueue=New-Object System.Collections.Generic.Queue[string]
 $global:DevKeySmokePromptQueue=$script:PromptQueue
 function Read-Host {
     param([string]$Prompt,[switch]$AsSecureString)
-    if($global:DevKeySmokePromptQueue.Count){$value=$global:DevKeySmokePromptQueue.Dequeue()}
-    elseif($Prompt -like '*Selecciona*'){$value='1'}
-    elseif($Prompt -like '*RESTAURAR*'){$value='RESTAURAR'}
-    else{$value=''}
+    if(-not $global:DevKeySmokePromptQueue.Count){throw ('Unexpected smoke-test prompt: '+$Prompt)}
+    $value=$global:DevKeySmokePromptQueue.Dequeue()
     if($AsSecureString){return (ConvertTo-SecureString -String $value -AsPlainText -Force)}
     return $value
 }
 $sourceRoot=Split-Path -Parent $PSScriptRoot
-$sandbox=Join-Path $env:TEMP ('DevKey-smoke-'+[guid]::NewGuid().ToString('N'))
+$sandbox=Join-Path ([IO.Path]::GetTempPath()) ('DevKey-smoke-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $sandbox -Force|Out-Null
 try {
     $script:DevKeyRoot=$sandbox
@@ -52,7 +52,8 @@ try {
     . (Join-Path $sourceRoot 'Modules\Templates.ps1')
     . (Join-Path $sourceRoot 'Modules\PromptLibrary.ps1')
     . (Join-Path $sourceRoot 'Modules\DevKey.Profiles.ps1')
-    . (Join-Path $sourceRoot 'Modules\DevKey.backup.ps1')
+    $backupModule=Join-Path $sourceRoot 'Modules\DevKey.backup.ps1'
+    if(Test-Path -LiteralPath $backupModule -PathType Leaf){. $backupModule}
     . (Join-Path $sourceRoot 'Modules\DevKey.GitX.ps1')
     . (Join-Path $sourceRoot 'Modules\DevKey.GitCreds.ps1')
     . (Join-Path $sourceRoot 'Modules\SystemInfo.ps1')
@@ -70,7 +71,7 @@ try {
     $sample|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8
     Import-DevKeyConfiguration
     Assert-DevKeyTest ($script:DevKeyConfig.Security.PBKDF2Iterations -ge 100000) 'Config example receives safe defaults for omitted security values'
-    Assert-DevKeyTest ($script:DevKeyConfig.Security.TokenSha256 -match '^[A-Fa-f0-9]{64}$') 'Config defaults include pinned token digest'
+    Assert-DevKeyTest ($script:DevKeyConfig.Security.TokenSha256 -match '^[A-Fa-f0-9]{64}$') 'Config defaults include a SHA-256 token digest'
     $script:DevKeyConfig.Interface.Theme='Matrix';Save-DevKeyConfiguration
     Assert-DevKeyTest ((Get-ChildItem -LiteralPath $script:BackupsRoot -Filter 'config-*.json').Count -eq 1) 'Config changes create a dated backup'
 
@@ -133,17 +134,25 @@ try {
     $kiro=Join-Path $script:AppsRoot 'Kiro\Kiro.exe';New-Item -ItemType Directory -Path (Split-Path -Parent $kiro) -Force|Out-Null;Set-Content -LiteralPath $kiro -Value 'placeholder'
     Assert-DevKeyTest ((Get-DevKeyApplicationPath -Name Kiro) -eq $kiro) 'Application paths resolve from the removable drive root'
 
-    $project=Join-Path $script:ProjectsRoot 'sample';New-Item -ItemType Directory -Path $project -Force|Out-Null
-    Set-Content -LiteralPath (Join-Path $project 'readme.txt') -Value 'safe project data'
-    Set-Content -LiteralPath (Join-Path $project '.env') -Value 'secret=should-not-be-backed-up'
-    $script:DevKeySessionId='smoke'
-    New-DevKeyProjectBackup
-    $archive=Get-ChildItem -LiteralPath $script:BackupsRoot -Filter 'Projects-*.zip' -File|Select-Object -First 1
-    $backupStatus=if($archive){Test-DevKeyProjectBackup -Path $archive.FullName}else{$null}
-    Assert-DevKeyTest ($backupStatus -and $backupStatus.Valid -and $backupStatus.ExcludedCount -ge 1) 'Project backup verifies and excludes sensitive paths'
-    Restore-DevKeyProjectBackup
-    $restored=Get-ChildItem -LiteralPath $script:ProjectsRoot -Directory -Filter 'Restored-*'|Select-Object -First 1
-    Assert-DevKeyTest ($restored -and (Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\readme.txt')) -and -not(Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\.env'))) 'Backup restores to a new path and keeps excluded secrets out'
+    if(Test-Path -LiteralPath $backupModule -PathType Leaf){
+        $project=Join-Path $script:ProjectsRoot 'sample';New-Item -ItemType Directory -Path $project -Force|Out-Null
+        Set-Content -LiteralPath (Join-Path $project 'readme.txt') -Value 'safe project data'
+        Set-Content -LiteralPath (Join-Path $project '.env') -Value 'secret=should-not-be-backed-up'
+        $script:DevKeySessionId='smoke'
+        New-DevKeyProjectBackup
+        $archive=Get-ChildItem -LiteralPath $script:BackupsRoot -Filter 'Projects-*.zip' -File|Select-Object -First 1
+        $backupStatus=if($archive){Test-DevKeyProjectBackup -Path $archive.FullName}else{$null}
+        Assert-DevKeyTest ($backupStatus -and $backupStatus.Valid -and $backupStatus.ExcludedCount -ge 1) 'Project backup verifies and excludes sensitive paths'
+        $script:PromptQueue.Enqueue('1');$script:PromptQueue.Enqueue('RESTAURAR')
+        Restore-DevKeyProjectBackup
+        $restored=Get-ChildItem -LiteralPath $script:ProjectsRoot -Directory -Filter 'Restored-*'|Select-Object -First 1
+        Assert-DevKeyTest ($restored -and (Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\readme.txt')) -and -not(Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\.env'))) 'Backup restores to a new path and keeps excluded secrets out'
+
+        Assert-DevKeyTest ($script:PromptQueue.Count -eq 0) 'Backup restore consumes its expected prompts'
+    } else {
+        Skip-DevKeyTest 'Project backup verification: optional DevKey.backup.ps1 is absent'
+        Skip-DevKeyTest 'Project restore: optional DevKey.backup.ps1 is absent'
+    }
 
     $template=Get-DevKeyTemplateFiles -Index 2 -Name 'smoke-project'
     $package=($template|Where-Object {$_.Name -eq 'package.json'})['Content']
@@ -153,23 +162,35 @@ try {
     Assert-DevKeyTest ((ConvertFrom-Json $package).name -eq 'smoke-project-s-app') 'Next template safely normalizes package names'
     Assert-DevKeyTest (@($template|Where-Object {$_.Name -like 'app/*'}).Count -ge 2) 'Next template includes app router page and layout'
 
-    $psExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $command64=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 2'))
-    $script:DevKeySessionFile=Join-Path $script:RuntimeRoot 'managed-processes.json'
-    $script:DevKeySessionId='smoke'
-    $managed=Start-DevKeyManagedProcess -FilePath $psExe -ArgumentList @('-NoProfile','-EncodedCommand',$command64) -Application 'Smoke'
-    $tracked=@(Get-DevKeyTrackedProcesses)
-    Assert-DevKeyTest (@($tracked|Where-Object Pid -eq $managed.Id).Count -eq 1) 'Process manager tracks an owned process by PID and identity'
-    Stop-DevKeyManagedProcesses
-    Assert-DevKeyTest ((Get-Process -Id $managed.Id -ErrorAction SilentlyContinue) -eq $null) 'Process manager requests cooperative close for tracked session process'
+    if([IO.Path]::DirectorySeparatorChar -eq '\'){
+        $psExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $command64=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 2'))
+        $script:DevKeySessionFile=Join-Path $script:RuntimeRoot 'managed-processes.json'
+        $script:DevKeySessionId='smoke'
+        $managed=Start-DevKeyManagedProcess -FilePath $psExe -ArgumentList @('-NoProfile','-EncodedCommand',$command64) -Application 'Smoke'
+        $tracked=@(Get-DevKeyTrackedProcesses)
+        Assert-DevKeyTest (@($tracked|Where-Object Pid -eq $managed.Id).Count -eq 1) 'Process manager tracks an owned process by PID and identity'
+        Stop-DevKeyManagedProcesses
+        Assert-DevKeyTest ((Get-Process -Id $managed.Id -ErrorAction SilentlyContinue) -eq $null) 'Process manager requests cooperative close for tracked session process'
+
+    } else {
+        Skip-DevKeyTest 'Managed Windows PowerShell process ownership requires Windows'
+        Skip-DevKeyTest 'Cooperative Windows process shutdown requires Windows'
+    }
 
     $critical=Join-Path $script:DevKeyRoot 'critical.ps1';Set-Content -LiteralPath $critical -Value 'Write-Output stable'
     $hash=(Get-FileHash -LiteralPath $critical -Algorithm SHA256).Hash
     [ordered]@{Version=1;Trust='UNSIGNED-LOCAL';Files=@([pscustomobject]@{Path='critical.ps1';SHA256=$hash})}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $script:ManifestFile -Encoding UTF8
-    $status=Get-DevKeyIntegrityStatus
-    Assert-DevKeyTest ($status.Status -eq 'UNSIGNED-LOCAL') 'Integrity manifest reports unsigned local trust'
-    Set-Content -LiteralPath $critical -Value 'Write-Output changed'
-    Assert-DevKeyTest ((Get-DevKeyIntegrityStatus).Status -eq 'MISMATCH') 'Integrity detects a changed critical file'
+    if([IO.Path]::DirectorySeparatorChar -eq '\'){
+        $status=Get-DevKeyIntegrityStatus
+        Assert-DevKeyTest ($status.Status -eq 'UNSIGNED-LOCAL') 'Integrity manifest reports unsigned local trust'
+        Set-Content -LiteralPath $critical -Value 'Write-Output changed'
+        $status=Get-DevKeyIntegrityStatus
+        Assert-DevKeyTest ($status.Status -eq 'MISMATCH' -and @($status.Changed) -contains 'critical.ps1') 'Integrity detects a changed critical file'
+    } else {
+        Skip-DevKeyTest 'Matching integrity manifest requires Windows path containment'
+        Skip-DevKeyTest 'Integrity file tampering requires Windows path containment'
+    }
 
     $dashboard=Get-DevKeyDashboard
     Assert-DevKeyTest (@($dashboard.Name) -contains 'OpenCode') 'Dashboard reports configured application states'
@@ -183,21 +204,126 @@ try {
     Initialize-DevKeyPaths
     Assert-DevKeyTest ($script:DevKeyRoot -eq $portableDevKey -and $script:UsbRoot -eq $portableRoot -and $script:KeyFile -eq (Join-Path $portableRoot 'unlock.k3y')) 'Path manager derives USB and DevKey roots from the launcher tree'
 
-    $fixtureUsb=Join-Path $sandbox 'LauncherFixture';$fixtureDevKey=Join-Path $fixtureUsb 'DevKey'
-    New-Item -ItemType Directory -Path $fixtureDevKey -Force|Out-Null
-    foreach($directory in @('Launcher','Core','Modules','Security','Guardian','Config')){Copy-Item -LiteralPath (Join-Path $sourceRoot $directory) -Destination $fixtureDevKey -Recurse -Force}
-    $fixtureKey=Join-Path $fixtureUsb 'unlock.k3y';Set-Content -LiteralPath $fixtureKey -Value 'smoke-token' -Encoding ASCII
-    $fixtureHash=(Get-FileHash -LiteralPath $fixtureKey -Algorithm SHA256).Hash
-    $fixtureConfigPath=Join-Path $fixtureDevKey 'Config\config.json';$fixtureConfig=Get-Content -LiteralPath $fixtureConfigPath -Raw|ConvertFrom-Json;$fixtureConfig.Security.TokenSha256=$fixtureHash;$fixtureConfig.Applications.Git.Enabled=$false;$fixtureConfig.Applications.Kiro.Enabled=$false;$fixtureConfig.Applications.OpenCode.Enabled=$false;Set-Content -LiteralPath $fixtureConfigPath -Value ($fixtureConfig|ConvertTo-Json -Depth 10) -Encoding UTF8
-    $fixtureLauncher=Join-Path $fixtureDevKey 'Launcher\DevKey.ps1';$launcherText=[IO.File]::ReadAllText($fixtureLauncher);$pinMatch=[regex]::Match($launcherText,"(?m)^\`$script:DevKeyPinnedTokenSha256='([A-Fa-f0-9]{64})'\s*$");if(-not $pinMatch.Success){throw 'Fixture launcher token pin was not found.'};$launcherText=$launcherText.Replace($pinMatch.Groups[1].Value,$fixtureHash);[IO.File]::WriteAllText($fixtureLauncher,$launcherText,(New-Object Text.UTF8Encoding($true)))
-    $global:DevKeySmokePromptQueue.Clear()
-    foreach($value in @('Fixture-password-24','Fixture-password-24','x','','1','','2','','3','','4','0','5','6','','7','0','8','0','9','0','0')){$global:DevKeySmokePromptQueue.Enqueue($value)}
-    & $fixtureLauncher
-    $fixtureError=Join-Path $fixtureDevKey 'Logs\error.log';$launcherError=$false;if(Test-Path -LiteralPath $fixtureError){$launcherError=(Get-Content -LiteralPath $fixtureError -Raw) -match 'Launcher error'}
-    if($global:DevKeySmokePromptQueue.Count -gt 0 -or $launcherError){Write-Host ("Launcher fixture prompts remaining: {0}" -f $global:DevKeySmokePromptQueue.Count);if(Test-Path -LiteralPath $fixtureError){Get-Content -LiteralPath $fixtureError}}
-    Assert-DevKeyTest (-not $launcherError -and $global:DevKeySmokePromptQueue.Count -eq 0) 'Launcher loads modules and routes each main-menu choice without runtime errors'
+    # Each launcher scenario gets an independent USB tree and generated configuration.
+    # Never copy Config, user data, credentials, tokens, vaults or projects from checkout/USB.
+    $currentHost=(Get-Process -Id $PID).Path
+    $worker=Join-Path $PSScriptRoot 'Fixtures\Invoke-LauncherFixture.ps1'
+    foreach($scenario in @('Navigation','BadToken','BadPassword','InvalidIntegrity')){
+        $fixtureUsb=Join-Path $sandbox ('LauncherFixture-'+$scenario)
+        $fixtureDevKey=Join-Path $fixtureUsb 'DevKey'
+        New-Item -ItemType Directory -Path $fixtureDevKey -Force|Out-Null
+        Set-Content -LiteralPath (Join-Path $fixtureDevKey '.devkey-smoke-fixture') -Value 'temporary test fixture'
+        foreach($directory in @('Launcher','Core','Modules','Security','Guardian')){
+            $destination=Join-Path $fixtureDevKey $directory
+            New-Item -ItemType Directory -Path $destination -Force|Out-Null
+            Get-ChildItem -LiteralPath (Join-Path $sourceRoot $directory) -Filter '*.ps1' -File | ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $destination
+            }
+        }
+        $fixtureConfigRoot=Join-Path $fixtureDevKey 'Config'
+        New-Item -ItemType Directory -Path $fixtureConfigRoot -Force|Out-Null
+        $fixtureKey=Join-Path $fixtureUsb 'unlock.k3y'
+        $fixtureBytes=New-Object byte[] 32
+        $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+        try{$rng.GetBytes($fixtureBytes)}finally{$rng.Dispose()}
+        [IO.File]::WriteAllBytes($fixtureKey,$fixtureBytes)
+        $fixtureHash=(Get-FileHash -LiteralPath $fixtureKey -Algorithm SHA256).Hash
+        $fixtureConfig=$script:DevKeyDefaultConfig | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+        $fixtureConfig.Security.TokenSha256=$fixtureHash
+        $fixtureConfig.Security.MaxAttempts=1
+        $fixtureConfig.Guardian.Enabled=$false
+        $fixtureConfig.Guardian.AutoLaunch=$false
+        foreach($app in $fixtureConfig.Applications.PSObject.Properties){$app.Value.Enabled=$false}
+        # A non-executable fixture file allows opening Git's menu without running Git.
+        $fixtureConfig.Applications.Git.Enabled=$true
+        $fixtureGit=Join-Path $fixtureUsb $fixtureConfig.Applications.Git.Path
+        New-Item -ItemType Directory -Path (Split-Path -Parent $fixtureGit) -Force|Out-Null
+        Set-Content -LiteralPath $fixtureGit -Value 'test placeholder: never execute'
+        if($scenario -eq 'InvalidIntegrity'){
+            $fixtureConfig.Applications.Kiro.Enabled=$true
+            $fixtureKiro=Join-Path $fixtureUsb $fixtureConfig.Applications.Kiro.Path
+            New-Item -ItemType Directory -Path (Split-Path -Parent $fixtureKiro) -Force|Out-Null
+            Set-Content -LiteralPath $fixtureKiro -Value 'test placeholder: never execute'
+            $manifestDirectory=Join-Path $fixtureConfigRoot 'manifests'
+            New-Item -ItemType Directory -Path $manifestDirectory -Force|Out-Null
+            Set-Content -LiteralPath (Join-Path $manifestDirectory 'integrity.json') -Value '{invalid fixture manifest' -Encoding UTF8
+        }
+        $fixtureConfigPath=Join-Path $fixtureConfigRoot 'config.json'
+        $fixtureConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $fixtureConfigPath -Encoding UTF8
+        if($scenario -eq 'BadPassword'){
+            New-DevKeyKdfRecord -Password 'Fixture-password-24' | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixtureConfigRoot 'auth.json') -Encoding UTF8
+        }
+        if($scenario -eq 'BadToken'){
+            $fixtureBytes[0]=$fixtureBytes[0] -bxor 255
+            [IO.File]::WriteAllBytes($fixtureKey,$fixtureBytes)
+        }
+        $tokenHashBefore=(Get-FileHash -LiteralPath $fixtureKey -Algorithm SHA256).Hash
+        $authHashBefore=if($scenario -eq 'BadPassword'){(Get-FileHash -LiteralPath (Join-Path $fixtureConfigRoot 'auth.json') -Algorithm SHA256).Hash}else{$null}
+        # Enrol only the copied launcher with the temporary token, keeping the gate intact.
+        $fixtureLauncher=Join-Path $fixtureDevKey 'Launcher\DevKey.ps1'
+        $launcherText=[IO.File]::ReadAllText($fixtureLauncher)
+        $pinMatch=[regex]::Match($launcherText,"(?m)^\`$script:DevKeyPinnedTokenSha256='([A-Fa-f0-9]{64})'\s*$")
+        if(-not $pinMatch.Success){throw 'Fixture launcher token pin was not found.'}
+        $launcherText=$launcherText.Replace($pinMatch.Groups[1].Value,$fixtureHash)
+        [IO.File]::WriteAllText($fixtureLauncher,$launcherText,(New-Object Text.UTF8Encoding($true)))
+        $stdout=Join-Path $fixtureDevKey 'fixture-stdout.txt'
+        $stderr=Join-Path $fixtureDevKey 'fixture-stderr.txt'
+        $arguments=@('-NoProfile','-NonInteractive','-File',('"'+$worker+'"'),'-FixtureRoot',('"'+$fixtureDevKey+'"'),'-Scenario',$scenario)
+        $child=$null
+        try {
+            $child=Start-Process -FilePath $currentHost -ArgumentList $arguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            # Retain the process handle so .NET Framework/Windows preserves ExitCode.
+            [void]$child.Handle
+            $completed=$child.WaitForExit(45000)
+            if(-not $completed){$child.Kill();[void]$child.WaitForExit(5000)}
+            Assert-DevKeyTest $completed ("$scenario launcher terminates within 45 seconds")
+            if(-not $completed){continue}
+            $child.Refresh()
+            Assert-DevKeyTest ($child.ExitCode -eq 0) ("$scenario launcher worker exits successfully")
+            $resultPath=Join-Path $fixtureDevKey 'fixture-result.json'
+            $hasResult=Test-Path -LiteralPath $resultPath -PathType Leaf
+            Assert-DevKeyTest $hasResult ("$scenario writes a current fixture result")
+            if(-not $hasResult){continue}
+            $result=Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+            if(@($result.Failures).Count){$result.Failures | ForEach-Object {Write-Host $_ -ForegroundColor Red}}
+            Assert-DevKeyTest (@($result.Failures).Count -eq 0) ("$scenario has no prompt mismatches, launch attempts or logged errors")
+            Assert-DevKeyTest (($result.Completed -join '|') -ceq ($result.Expected -join '|')) ("$scenario consumes exactly the expected navigation")
+            Assert-DevKeyTest ($result.ProcessAttempts -eq 0) ("$scenario never launches host applications")
+            Assert-DevKeyTest ((Get-FileHash -LiteralPath $fixtureKey -Algorithm SHA256).Hash -ceq $tokenHashBefore) ("$scenario preserves the temporary token bytes")
+            $accessPath=Join-Path $fixtureDevKey 'Logs\access.log'
+            $access=if(Test-Path -LiteralPath $accessPath){Get-Content -LiteralPath $accessPath -Raw}else{''}
+            $sessions=[regex]::Matches($access,'Sesion DevKey iniciada\.').Count
+            if($scenario -eq 'Navigation'){
+                $routeSteps=@{1='software-return';2='github-return';3='projects-return';4='status-return';5='maintenance-return';6='security-return';7='info-return'}
+                foreach($key in 1..7){
+                    Assert-DevKeyTest ((@($result.Completed) -contains ("main-$key")) -and (@($result.Completed) -contains $routeSteps[$key])) ("Main option $key reaches its real handler")
+                }
+                foreach($key in 1..4){Assert-DevKeyTest (@($result.Completed) -contains ("software-$key")) ("Software option $key returns safely")}
+                foreach($menu in @('software','github','projects','maintenance','security')){
+                    Assert-DevKeyTest (@($result.Completed) -contains ($menu+'-return')) ("$menu option 0 returns to main with one selection")
+                }
+                Assert-DevKeyTest ($sessions -eq 1 -and [regex]::Matches($access,'Initial password configured\.').Count -eq 1 -and [regex]::Matches($access,'Sesion DevKey finalizada\.').Count -eq 1) 'Authentication/setup and session lifecycle occur exactly once'
+                $authPath=Join-Path $fixtureConfigRoot 'auth.json'
+                $authValid=$false
+                if(Test-Path -LiteralPath $authPath){
+                    $fixtureAuth=Get-Content -LiteralPath $authPath -Raw | ConvertFrom-Json
+                    $authValid=Test-DevKeyKdfRecord -Password 'Fixture-password-24' -Record $fixtureAuth
+                }
+                Assert-DevKeyTest $authValid 'Launcher persists only the temporary password KDF record'
+            } elseif($scenario -eq 'BadToken'){
+                Assert-DevKeyTest ($sessions -eq 0 -and -not(Test-Path -LiteralPath (Join-Path $fixtureConfigRoot 'auth.json'))) 'Tampered temporary token blocks authentication and main menu'
+            } elseif($scenario -eq 'BadPassword'){
+                Assert-DevKeyTest ($sessions -eq 0 -and [regex]::Matches($access,'Authentication failed\.').Count -eq 1) 'Wrong temporary password blocks the session'
+                Assert-DevKeyTest ((Get-FileHash -LiteralPath (Join-Path $fixtureConfigRoot 'auth.json') -Algorithm SHA256).Hash -ceq $authHashBefore) 'Rejected password leaves the temporary authentication record unchanged'
+            } else {
+                Assert-DevKeyTest (@($result.Completed) -contains 'integrity-denied-pause') 'Invalid manifest blocks the software operation through the real integrity gate'
+            }
+        } finally {
+            if($child){if(-not $child.HasExited){$child.Kill();[void]$child.WaitForExit(5000)};$child.Dispose()}
+        }
+    }
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host ("`nSmoke tests passed: {0}; failed: {1}" -f $script:Passes,$script:Failures.Count)
+Write-Host ("`nSmoke tests passed: {0}; failed: {1}; skipped: {2}" -f $script:Passes,$script:Failures.Count,$script:Skipped)
 if($script:Failures.Count){$script:Failures|ForEach-Object{Write-Host " - $_"};exit 1}

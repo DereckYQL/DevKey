@@ -1,7 +1,7 @@
-$ErrorActionPreference='Stop'
-$script:TestRoot=Join-Path $env:TEMP ('DevKey-tests-'+[guid]::NewGuid().ToString('N'))
+﻿$ErrorActionPreference='Stop'
+$script:TestRoot=Join-Path ([IO.Path]::GetTempPath()) ('DevKey-tests-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $script:TestRoot -Force | Out-Null
-$script:passed=0;$script:failed=0
+$script:passed=0;$script:failed=0;$script:skipped=0
 function Assert-DevKeyTest {param([string]$Name,[bool]$Condition);if($Condition){$script:passed++;Write-Host "PASS $Name" -ForegroundColor Green}else{$script:failed++;Write-Host "FAIL $Name" -ForegroundColor Red}}
 try {
     $script:DevKeyRoot=$script:TestRoot;$script:UsbRoot=$script:TestRoot
@@ -16,7 +16,24 @@ try {
     Set-DevKeyLockoutState -Failures 2;Assert-DevKeyTest 'lockout failure counter persists' ((Get-DevKeyLockoutState).Failures -eq 2)
     $safe=Get-DevKeySafeProjectPath 'Project-One';Assert-DevKeyTest 'project path remains inside Projects' ($safe.StartsWith($script:ProjectsRoot,[StringComparison]::OrdinalIgnoreCase));$traversalRejected=$false;try{Get-DevKeySafeProjectPath '..\outside'|Out-Null}catch{$traversalRejected=$true};Assert-DevKeyTest 'rejects project traversal' $traversalRejected
     Assert-DevKeyTest 'integrity is explicitly unconfigured without manifest' ((Get-DevKeyIntegrityStatus).Status -eq 'UNCONFIGURED')
-    $code=Join-Path $script:DevKeyRoot 'sample.ps1';Set-Content -LiteralPath $code -Value 'one' -Encoding UTF8;$hash=(Get-FileHash -LiteralPath $code -Algorithm SHA256).Hash;@{Files=@(@{Path='sample.ps1';SHA256=$hash})}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath $script:ManifestFile -Encoding UTF8;Assert-DevKeyTest 'local manifest reports unsigned status when matching' ((Get-DevKeyIntegrityStatus).Status -eq 'UNSIGNED-LOCAL');Set-Content -LiteralPath $code -Value 'two' -Encoding UTF8;Assert-DevKeyTest 'integrity detects changed file' ((Get-DevKeyIntegrityStatus).Status -eq 'MISMATCH')
-    Write-Host "RESULT passed=$script:passed failed=$script:failed"
+    $code=Join-Path $script:DevKeyRoot 'sample.ps1';Set-Content -LiteralPath $code -Value 'one' -Encoding UTF8;$hash=(Get-FileHash -LiteralPath $code -Algorithm SHA256).Hash;@{Version=1;Trust='UNSIGNED-LOCAL';Files=@(@{Path='sample.ps1';SHA256=$hash})}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath $script:ManifestFile -Encoding UTF8
+    # The production verifier uses Windows path containment rules.
+    # Do not mock those rules or count Linux execution as Windows verification.
+    if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+        Assert-DevKeyTest 'local manifest reports unsigned status when matching' ((Get-DevKeyIntegrityStatus).Status -eq 'UNSIGNED-LOCAL')
+        Set-Content -LiteralPath $code -Value 'two' -Encoding UTF8
+        $status=Get-DevKeyIntegrityStatus
+        Assert-DevKeyTest 'integrity detects changed file' ($status.Status -eq 'MISMATCH' -and @($status.Changed) -contains 'sample.ps1')
+    } else {
+        $script:skipped+=2
+        Write-Host 'SKIP matching-manifest and changed-file checks require Windows path containment (run on Windows PowerShell 5.1).'
+    }
+    # Retain regression coverage for the invalid fixture that caused the old failures.
+    @{Files=@(@{Path='sample.ps1';SHA256=$hash})}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath $script:ManifestFile -Encoding UTF8
+    Assert-DevKeyTest 'manifest missing version and trust is rejected' ((Get-DevKeyIntegrityStatus).Status -eq 'INVALID')
+    @{Version=1;Trust='SIGNED';Files=@(@{Path='sample.ps1';SHA256=$hash})}|ConvertTo-Json -Depth 3|Set-Content -LiteralPath $script:ManifestFile -Encoding UTF8
+    Assert-DevKeyTest 'unsupported manifest trust is rejected' ((Get-DevKeyIntegrityStatus).Status -eq 'INVALID')
+
+    Write-Host "RESULT passed=$script:passed failed=$script:failed skipped=$script:skipped"
     if($script:failed -gt 0){exit 1}
 } finally {Remove-Item -LiteralPath $script:TestRoot -Recurse -Force -ErrorAction SilentlyContinue}

@@ -29,6 +29,9 @@ TryOmarchy/Omarchy: la opción queda disponible con el aviso solicitado.
 | `Modules/DevKey.Software.ps1` (nuevo) | Registro confiable en código con nombre, descripción, disponibilidad y acción; control de errores por selección; Docker sin instalación ni arranque de Desktop/servicios. |
 | `Modules/Maintenance.ps1` | Explica la ausencia del módulo original de backup sin fabricar una implementación ni tocar backups. |
 | `Modules/SystemInfo.ps1` | No presenta autenticación correcta si no existe sesión autenticada. |
+| `Tests/Invoke-DevKeySmokeTests.ps1` | Fixture de configuración generado sin Config del checkout; recorrido vNext real y casos negativos aislados con timeout. |
+| `Tests/Fixtures/Invoke-LauncherFixture.ps1` (nuevo) | Consola programada que verifica prompt, función llamadora, respuesta segura y consumo exacto; impide ejecutar aplicaciones externas. |
+| `Tests/Invoke-DevKeyTests.ps1` | Corrige Version/Trust del manifiesto temporal y añade pruebas de rechazo de metadatos inválidos. |
 | `Tests/Invoke-DevKeyMenuTests.ps1` (nuevo) | Pruebas de navegación, registro, lanzadores con mocks, sintaxis de todos los PS1 y timeout de la sonda Docker. |
 | `.gitignore` | Conserva las exclusiones existentes; permite plantillas `.env.example`, `.env.template` y `*.example.json` seguras. |
 | `README.md` | Entrada al nuevo flujo, pruebas y documentación. |
@@ -54,45 +57,110 @@ máximo por proceso. Drena ambas salidas y no muestra sus contenidos. Un timeout
 termina solo la sonda iniciada por DevKey. No instala ni configura runtimes,
 servicios, WSL, contenedores o procesos privilegiados.
 
-## Validación ejecutada
+## Validación ejecutada tras corregir las fixtures
 
 Entorno real: Linux, PowerShell **7.4.6** descargado de la publicación oficial y
 verificado contra su manifiesto SHA-256. No hay Windows PowerShell 5.1 ni USB
-física. Se usaron directorios XDG/TEMP de prueba, fuera del checkout.
+física. Se ejecutaron las tres suites disponibles después de los cambios:
 
-| Comando | Resultado observado |
-| --- | --- |
-| `pwsh -NoProfile -File Tests/Invoke-DevKeyMenuTests.ps1` | **48 aprobadas, 0 fallidas**, incluida sintaxis de todos los PS1. |
-| `pwsh -NoProfile -File Tests/Invoke-DevKeyTests.ps1` | **9 aprobadas, 2 fallidas**, salida 1. |
-| Mismo comando sobre una copia intacta del commit base | **9 aprobadas, las mismas 2 fallidas**, salida 1. |
-| `pwsh -NoProfile -File Tests/Invoke-DevKeySmokeTests.ps1` | Abortada antes de assertions: falta `Modules/DevKey.backup.ps1`, salida 1. |
-| `git diff --check` | Sin errores de whitespace. |
+| Comando | Aprobadas | Fallidas | Omitidas explícitamente | Salida |
+| --- | ---: | ---: | ---: | ---: |
+| `pwsh -NoProfile -File Tests/Invoke-DevKeyMenuTests.ps1` | 48 | 0 | 0 | 0 |
+| `pwsh -NoProfile -File Tests/Invoke-DevKeyTests.ps1` | 11 | 0 | 2 | 0 |
+| `pwsh -NoProfile -File Tests/Invoke-DevKeySmokeTests.ps1` | 77 | 0 | 6 | 0 |
 
-Las dos assertions heredadas fallidas son `local manifest reports unsigned
-status when matching` e `integrity detects changed file`. Su fixture omite
-`Version=1` y `Trust=UNSIGNED-LOCAL`, exigidos por el verificador actual. Además,
-el verificador usa separadores Windows al comprobar el prefijo del directorio,
-por lo que esas pruebas no validan integridad real en Linux. No se alteró el
-verificador ni se desactivaron assertions para conseguir un resultado verde.
+La suite Menu incluye sintaxis de todos los PS1, incluido el nuevo helper.
+`git diff --check` y la revisión de secretos de las modificaciones no detectaron
+problemas. Core, Security, Guardian, Launcher y Modules no cambian en esta
+corrección de pruebas. Los resultados omitidos no se cuentan como aprobados.
 
-Smoke depende también de configuración no exportada y contiene una secuencia de
-opciones del menú anterior; requiere mantenimiento separado con los originales.
-No se inventó el módulo faltante. La aplicación puede usar el módulo local si la
-USB lo conserva; la funcionalidad de backups no se declara verificada.
+Las dos assertions heredadas que antes fallaban (`local manifest reports unsigned
+status when matching` e `integrity detects changed file`) utilizaban un JSON sin
+`Version=1` ni `Trust=UNSIGNED-LOCAL`, obligatorios para el verificador real. La
+fixture ahora incluye ambos; el test de alteración también exige que `Changed`
+identifique `sample.ps1`. Se conserva una prueba del formato antiguo incompleto y
+otra de confianza no admitida: ambos deben devolver `INVALID`.
 
-Las 48 pruebas cubren el orden y etiquetas, registro extensible, volver con cero,
-entrada inválida, excepciones, integridad denegada, rutas relativas, argumentos
-Kiro, entorno OpenCode y restauración, CLI Docker configurada, rutas principales,
-una llamada al verificador de autenticación con mocks, retorno de Seguridad y
-limpieza. En Linux prueban además la sonda con procesos auxiliares de salida cero,
-no cero, inexistentes y lentos. Esas cinco assertions auxiliares se omiten en
-Windows; las otras 43 están diseñadas para PowerShell 5.1. Los lanzamientos reales,
-la autenticación interactiva y las operaciones reales GitHub/Projects/Vault no se
-ejecutaron; sus rutas se comprobaron con mocks. No afirmar validación Windows.
+Las dos comprobaciones positivas de archivos permanecen pendientes en Linux:
+el verificador de producción usa contención de rutas Windows. Se omiten solo en
+plataformas sin separador Windows, con mensaje y contador explícitos. En Windows
+se ejecutan ambas assertions corregidas contra el verificador original, sin mocks,
+sin cambiar algoritmos, sin regenerar manifiestos para eludir errores y sin
+relajar la contención de rutas. Aún no se afirma que hayan pasado en Windows.
+
+Las seis omisiones de smoke son: dos por el módulo opcional de backup/restauración
+no exportado y cuatro por requerir Windows (identidad/cierre de un proceso Windows
+PowerShell y manifiesto coincidente/archivo alterado). Cuando están disponibles
+las dependencias o la plataforma, las comprobaciones originales siguen activas.
+No se ha inventado un módulo de backup ni se ha modificado una USB real.
+
+### Recorrido del launcher con configuración autocontenida
+
+Smoke crea cuatro árboles independientes bajo el directorio temporal del sistema.
+Copia únicamente scripts de Launcher/Core/Modules/Security/Guardian y crea Config
+con los valores predeterminados del código; **no copia Config desde Git ni desde
+la USB**. Cada escenario genera su propio token temporal de 32 bytes. Solo en el
+launcher copiado se ancla ese hash, conservando intactos la comparación y los
+controles reales. Todas las contraseñas y registros KDF son exclusivos del test.
+
+El escenario Navigation programa la nueva secuencia por función y prompt:
+autenticación inicial, entrada inválida principal, opción 1, entrada inválida de
+Software, Kiro/OpenCode/TryOmarchy/Docker con sus pausas, Software 0, GitHub 0,
+Projects 0, estado, Mantenimiento 0, Seguridad (entrada inválida, estado y 0),
+información y salida principal 0. Los prefijos de cada prompt distinguen menú
+principal y Software; las funciones llamadoras distinguen los otros submenús que
+comparten `Opcion`. Una respuesta cero de más, autenticación repetida, prompt
+inesperado o cola sobrante produce un fallo. Las contraseñas no se incluyen en la
+traza. Se comprueba que cada ruta llegó a su manejador real y volvió al padre.
+
+Los otros tres escenarios verifican con los controles originales:
+
+- BadToken: un token temporal alterado impide autenticación y entrada al menú;
+  no se crea auth.json ni se sustituye el token.
+- BadPassword: la contraseña temporal incorrecta impide la sesión y conserva sin
+  cambios el registro KDF; se registra un único rechazo.
+- InvalidIntegrity: un manifiesto temporal inválido bloquea la acción Kiro en
+  `Confirm-DevKeyOperationalIntegrity`, sin ejecutar el placeholder del programa.
+
+Kiro, OpenCode, Node y Docker están deshabilitados en la fixture de navegación
+para evitar detección y ejecución de instalaciones del host. Git usa un archivo
+placeholder temporal que permite entrar en su menú, sin ejecutar Git. El caso de
+integridad habilita únicamente el placeholder Kiro para probar su bloqueo. Guardian
+no se inicia en la fixture. Un guard registra y rechaza cualquier Start-Process
+inesperado; las funciones de autenticación, token e integridad no se sustituyen.
+
+Cada launcher se ejecuta en un proceso PowerShell separado, con `-NoProfile
+-NonInteractive`, un límite de **45 segundos**, presupuesto de prompts y resultado
+JSON propio. El padre comprueba finalización, código de salida, resultado de esa
+ejecución, errores de nivel ERROR, consumo exacto, ausencia de lanzamientos y
+conservación de los bytes del token. La existencia de error.log por mensajes INFO
+no se interpreta como un error. La limpieza termina solo el worker que inició el
+test si no ha salido y elimina el sandbox en finally. No hay respuestas de reserva
+que vuelvan a seleccionar opciones indefinidamente.
+
+### Validación pendiente en Windows PowerShell 5.1
+
+Desde la raíz del checkout de desarrollo, sin conectar la USB ni copiar sus datos:
+
+```powershell
+powershell.exe -NoProfile -File .\Tests\Invoke-DevKeyTests.ps1
+powershell.exe -NoProfile -File .\Tests\Invoke-DevKeyMenuTests.ps1
+powershell.exe -NoProfile -File .\Tests\Invoke-DevKeySmokeTests.ps1
+```
+
+Confirmar el código de salida cero y revisar los contadores de omisiones. El
+módulo de backup original sigue ausente: sus dos pruebas deben seguir figurando
+como SKIP hasta disponer de una copia de desarrollo revisada. Se requiere ejecutar
+realmente las assertions de integridad y proceso que Linux omite, y confirmar el
+worker/cola en Windows 5.1. El BAT, consola/fuentes, aplicaciones reales, Vault,
+servicios externos y Guardian/USB físicos siguen siendo validación manual aparte.
+Las cinco sondas auxiliares Unix de la suite Menu no se ejecutan en Windows; no
+son validación de Docker real. No se afirma funcionamiento Windows ni aceptación
+completa basándose en los resultados Linux.
 
 ## Seguridad y pendientes
 
-- No se cambiaron Authentication, Integrity, hashes/salts, pin del launcher,
+- No se cambiaron Authentication, Integrity, hashes/salts operativos, pin del launcher original,
   Guardian, formato de configuración ni el BAT. No se crearon claves ni vaults.
 - El hash predeterminado de Bootstrap difiere del pin del launcher en la base.
   Una instalación nueva sin configuración privada se detendrá por ese control.

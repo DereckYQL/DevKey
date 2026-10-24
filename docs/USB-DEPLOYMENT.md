@@ -50,7 +50,8 @@ Projects, Vault y backups establecida por tu instalación.
 La copia publicada de la rama fuente omite `Modules\DevKey.backup.ps1` y toda la
 configuración privada. Si tu USB tiene ese módulo, consérvalo. Sin él la opción
 Backup de Mantenimiento explica la ausencia y no modifica datos. La suite smoke
-heredada depende de ese archivo y de fixtures de configuración que faltan.
+informa dos omisiones explícitas si falta ese módulo; genera su propia
+configuración temporal y no requiere Config en el checkout.
 
 El hash predeterminado del token en `Core\Bootstrap.ps1` difiere del anclado en el
 launcher. No se modifica ninguno en este rediseño. Conserva `Config\config.json`
@@ -106,10 +107,11 @@ powershell.exe -NoProfile -File .\Tests\Invoke-DevKeyTests.ps1
 powershell.exe -NoProfile -File .\Tests\Invoke-DevKeySmokeTests.ps1
 ```
 
-La suite heredada tiene problemas previos documentados en
-`docs/ENGINEERING-REPORT.md`; no interpretar un fallo como éxito. Ejecuta smoke
-solo cuando estén disponibles sus dependencias originales y revisados sus
-fixtures. Las nuevas pruebas no lanzan aplicaciones reales ni cambian servicios.
+Los resultados y las omisiones por plataforma/dependencias se detallan en
+`docs/ENGINEERING-REPORT.md`; no interpretar un fallo ni una omisión como éxito.
+Smoke genera su configuración, credenciales y token temporales y no necesita
+datos de la USB. Sus workers tienen un timeout de 45 segundos por escenario.
+Las pruebas del launcher no lanzan aplicaciones reales ni cambian servicios.
 
 Abre `D:\DevKey\Launcher\DevKey.bat` de forma normal y verifica:
 
