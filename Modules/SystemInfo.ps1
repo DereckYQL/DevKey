@@ -3,7 +3,7 @@
     $token=Test-DevKeyPhysicalToken
     $items=@(
         [pscustomobject]@{Name='Unidad USB / token';State=$(if($token){'OK'}else{'ERROR'})},
-        [pscustomobject]@{Name='Autenticación';State='OK (sesión actual)'},
+        [pscustomobject]@{Name='Autenticación';State=$(if($script:DevKeyAuthenticated){'OK (sesión actual)'}else{'PENDIENTE'})},
         [pscustomobject]@{Name='Integridad';State=$integrity.Status},
         [pscustomobject]@{Name='Guardian';State=(Get-DevKeyGuardianStatus)},
         [pscustomobject]@{Name='Kiro';State=$(if(Get-DevKeyApplicationPath Kiro){'DISPONIBLE'}else{'FALTANTE'})},

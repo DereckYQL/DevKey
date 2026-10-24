@@ -29,3 +29,8 @@ auth.json
 *.backup
 node_modules/
 .venv/
+
+# Safe configuration templates may be reviewed and versioned
+!.env.example
+!.env.template
+!*.example.json

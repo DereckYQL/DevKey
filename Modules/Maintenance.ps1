@@ -1,4 +1,4 @@
-function Repair-DevKeyStructure {
+﻿function Repair-DevKeyStructure {
     $targets=@($script:ConfigRoot,$script:LogsRoot,$script:BackupsRoot,$script:RuntimeRoot,$script:ProjectsRoot)
     $missing=@($targets|Where-Object {-not(Test-Path -LiteralPath $_ -PathType Container)})
     if(-not $missing){Write-Host 'La estructura configurada ya existe.' -ForegroundColor Green;return}
@@ -40,7 +40,7 @@ function Show-DevKeyMaintenance {
                 '9'{Write-Host (Get-DevKeyGuardianStatus);if((Read-Host 'Iniciar Guardian en una ventana visible? (S/N)') -in @('S','s')){Start-DevKeyGuardian};Pause-DevKey}
                 '10'{Show-DevKeyConfigurationMenu}
                 '11'{Show-DevKeyProfilesMenu}
-                '12'{Show-DevKeyBackupMenu}
+                '12'{if(Get-Command Show-DevKeyBackupMenu -ErrorAction SilentlyContinue){Show-DevKeyBackupMenu}else{Write-Host 'El módulo de backup no está incluido en esta copia. Conserva el módulo original de la USB; no se modificaron los backups.' -ForegroundColor Yellow;Pause-DevKey}}
                 '13'{Show-DevKeySystemInfo}
                 '14'{Show-DevKeyPortableApplications}
                 '15'{Show-DevKeyOSMenu}

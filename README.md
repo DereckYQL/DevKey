@@ -108,3 +108,18 @@ powershell.exe -NoProfile -File .\Tests\Invoke-DevKeySmokeTests.ps1
 ```
 
 The suite uses temporary folders and mock input. It exercises config validation/preservation, PBKDF2 setup/login/change/recovery, lockout persistence, log redaction, path validation, application resolution, backup verification/restoration, templates, process ownership, local-manifest mismatch detection, dynamic root calculation, and the main-menu routes. It does not substitute for the physical USB tests listed above.
+
+## Rediseño de terminal vNext
+
+El menú activo muestra Abrir software, GitHub, Projects, Estado del sistema,
+Mantenimiento, Seguridad / DevKey Vault e Información del sistema, en ese orden.
+Software Manager reutiliza Kiro/OpenCode, conserva TryOmarchy como integración
+sin configurar y comprueba Docker sin iniciar Desktop ni modificar servicios.
+
+Consulta [el informe de ingeniería](docs/ENGINEERING-REPORT.md) para resultados y
+limitaciones, y [el despliegue a USB](docs/USB-DEPLOYMENT.md) antes de actualizar.
+Pruebas de navegación sin aplicaciones reales:
+
+```powershell
+powershell.exe -NoProfile -File .\Tests\Invoke-DevKeyMenuTests.ps1
+```
