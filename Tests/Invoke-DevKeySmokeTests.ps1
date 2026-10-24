@@ -139,11 +139,12 @@ try {
         Set-Content -LiteralPath (Join-Path $project 'readme.txt') -Value 'safe project data'
         Set-Content -LiteralPath (Join-Path $project '.env') -Value 'secret=should-not-be-backed-up'
         $script:DevKeySessionId='smoke'
+        $script:PromptQueue.Enqueue('')
         New-DevKeyProjectBackup
         $archive=Get-ChildItem -LiteralPath $script:BackupsRoot -Filter 'Projects-*.zip' -File|Select-Object -First 1
         $backupStatus=if($archive){Test-DevKeyProjectBackup -Path $archive.FullName}else{$null}
         Assert-DevKeyTest ($backupStatus -and $backupStatus.Valid -and $backupStatus.ExcludedCount -ge 1) 'Project backup verifies and excludes sensitive paths'
-        $script:PromptQueue.Enqueue('1');$script:PromptQueue.Enqueue('RESTAURAR')
+        $script:PromptQueue.Enqueue('1');$script:PromptQueue.Enqueue('RESTAURAR');$script:PromptQueue.Enqueue('')
         Restore-DevKeyProjectBackup
         $restored=Get-ChildItem -LiteralPath $script:ProjectsRoot -Directory -Filter 'Restored-*'|Select-Object -First 1
         Assert-DevKeyTest ($restored -and (Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\readme.txt')) -and -not(Test-Path -LiteralPath (Join-Path $restored.FullName 'sample\.env'))) 'Backup restores to a new path and keeps excluded secrets out'
@@ -327,3 +328,4 @@ try {
 }
 Write-Host ("`nSmoke tests passed: {0}; failed: {1}; skipped: {2}" -f $script:Passes,$script:Failures.Count,$script:Skipped)
 if($script:Failures.Count){$script:Failures|ForEach-Object{Write-Host " - $_"};exit 1}
+
