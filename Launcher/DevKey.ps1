@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference='Stop'
 $script:LauncherPath=$PSScriptRoot
@@ -15,13 +15,17 @@ Initialize-DevKeyPaths
 
 $moduleFiles=@(
     'Applications.ps1','Projects.ps1','GitManager.ps1','Maintenance.ps1','SystemInfo.ps1','Templates.ps1','PromptLibrary.ps1',
-    'DevKey.Profiles.ps1','DevKey.backup.ps1','DevKey.GitX.ps1','DevKey.GitCreds.ps1','DevKey.OS.ps1'
+    'DevKey.Menu.ps1','DevKey.Software.ps1','DevKey.Profiles.ps1','DevKey.GitX.ps1','DevKey.GitCreds.ps1','DevKey.OS.ps1'
 )
 foreach($moduleFile in $moduleFiles){
     $modulePath=Join-Path $script:ModulesRoot $moduleFile
     if(-not(Test-Path -LiteralPath $modulePath -PathType Leaf)){throw "Required module is missing: Modules\$moduleFile"}
     . $modulePath
 }
+
+# The USB export omitted the backup module; retain it when supplied locally.
+$backupModule=Join-Path $script:ModulesRoot 'DevKey.backup.ps1'
+if(Test-Path -LiteralPath $backupModule -PathType Leaf){. $backupModule}
 
 $script:DevKeySessionId=[guid]::NewGuid().ToString('N')
 $script:DevKeyAuthenticated=$false
@@ -32,103 +36,8 @@ function Show-SystemInfo { Show-DevKeySystemInfo }
 function Get-DevKeyDisplayStatus {
     $token=Test-DevKeyPhysicalToken
     $integrity=Get-DevKeyIntegrityStatus
-    $integrityText=if($integrity.Status -eq 'UNSIGNED-LOCAL'){'LOCAL'}elseif($integrity.Status -eq 'UNCONFIGURED'){'PENDING'}elseif($integrity.Status -eq 'MISMATCH'){'ERROR'}else{$integrity.Status}
+    $integrityText=if($integrity.Status -eq 'UNSIGNED-LOCAL'){'LOCAL'}elseif($integrity.Status -eq 'UNCONFIGURED'){'PENDIENTE'}elseif($integrity.Status -eq 'MISMATCH'){'ERROR'}else{$integrity.Status}
     return [pscustomobject]@{Token=$token;Integrity=$integrityText;Auth=$script:DevKeyAuthenticated}
-}
-function Show-DevKeyFrame {
-    Clear-Host
-    $status=Get-DevKeyDisplayStatus
-    $accent='Cyan'
-    try { $Host.UI.RawUI.BackgroundColor='DarkBlue';$Host.UI.RawUI.ForegroundColor='Gray' } catch { }
-    Clear-Host
-    Write-Host ''
-    Write-Host '  DEVKEY  PORTABLE DEV ENVIRONMENT' -ForegroundColor $accent
-    Write-Host '  ----------------------------------------------------------------' -ForegroundColor Blue
-    Write-Host ('  Version {0}  |  {1}' -f (Get-DevKeyVersion),$script:DevKeyRoot) -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host '  [1] Open Software' -ForegroundColor White
-    Write-Host '  [2] GitHub' -ForegroundColor White
-    Write-Host '  [3] Projects' -ForegroundColor White
-    Write-Host '  [4] System Status' -ForegroundColor White
-    Write-Host '  [5] Maintenance' -ForegroundColor White
-    Write-Host '  [6] Security / DevKey Vault' -ForegroundColor White
-    Write-Host '  [7] System Information' -ForegroundColor White
-    Write-Host '  [0] Exit' -ForegroundColor DarkGray
-    $tokenText=if($status.Token){'OK'}else{'ERROR'}
-    $authText=if($status.Auth){'OK'}else{'PENDING'}
-    Write-Host ''
-    Write-Host '  ----------------------------------------------------------------' -ForegroundColor Blue
-    Write-Host ("  USB: {0}  |  INTEGRITY: {1}  |  AUTH: {2}" -f $tokenText,$status.Integrity,$authText) -ForegroundColor $(if(-not $status.Token -or $status.Integrity -eq 'ERROR'){'Red'}else{$accent})
-    Write-Host ''
-}
-function Show-SoftwareMenu {
-    $software=@(
-        [pscustomobject]@{Key='1';Name='Kiro';Description='Portable coding assistant';Action='Kiro'},
-        [pscustomobject]@{Key='2';Name='OpenCode';Description='Terminal coding agent';Action='OpenCode'},
-        [pscustomobject]@{Key='3';Name='TryOmarchy';Description='Pending configuration';Action='TryOmarchy'},
-        [pscustomobject]@{Key='4';Name='Docker';Description='Docker Desktop / engine';Action='Docker'}
-    )
-    while($true){
-        Clear-Host
-        Write-Host '  DEVKEY  PORTABLE DEV ENVIRONMENT' -ForegroundColor Cyan
-        Write-Host '  ----------------------------------------------------------------' -ForegroundColor Blue
-        Write-Host '  OPEN SOFTWARE' -ForegroundColor White
-        Write-Host ''
-        foreach($tool in $software){Write-Host ("  [{0}] {1,-12} {2}" -f $tool.Key,$tool.Name,$tool.Description) -ForegroundColor White}
-        Write-Host '  [0] Return to Main Menu' -ForegroundColor DarkGray
-        Write-Host ''
-        $choice=Read-Host '  Select a tool'
-        if($choice -eq '0'){return}
-        $selected=$software|Where-Object{$_.Key -eq $choice}|Select-Object -First 1
-        if(-not $selected){Write-Host '  Invalid selection. Choose 1-4 or 0.' -ForegroundColor Yellow;Start-Sleep -Seconds 1;continue}
-        switch($selected.Action){
-            {$_ -in 'Kiro','OpenCode'} {
-                if(Confirm-DevKeyOperationalIntegrity){[void](Start-DevKeyApplication -Name $selected.Action)}
-                Pause-DevKey
-            }
-            'TryOmarchy' {
-                Write-Host '  TryOmarchy is pending configuration. No executable or launch procedure is configured.' -ForegroundColor Yellow
-                Pause-DevKey
-            }
-            'Docker' { Invoke-DevKeyDocker;Pause-DevKey }
-        }
-    }
-}
-function Show-DevKeyStatus {
-    Clear-Host
-    Write-Host '  DEVKEY  PORTABLE DEV ENVIRONMENT' -ForegroundColor Cyan
-    Write-Host '  ----------------------------------------------------------------' -ForegroundColor Blue
-    Write-Host '  SYSTEM STATUS' -ForegroundColor White
-    Write-Host ''
-    Get-DevKeyDashboard | Format-Table -AutoSize
-    Pause-DevKey
-}
-function Invoke-DevKeyDocker {
-    $dockerPath=Get-DevKeyApplicationPath -Name Docker
-    if(-not $dockerPath){Write-Host '  Docker is unavailable: no configured Docker executable was found.' -ForegroundColor Yellow;return $false}
-    if(-not(Confirm-DevKeyOperationalIntegrity)){return $false}
-    $dockerCli=Get-Command 'docker.exe','docker' -ErrorAction SilentlyContinue|Select-Object -First 1
-    $desktop=[IO.Path]::GetFileName($dockerPath) -ieq 'Docker Desktop.exe'
-    $engineReady=$false
-    if($dockerCli){
-        try { & $dockerCli.Source info *> $null; $engineReady=($LASTEXITCODE -eq 0) } catch { $engineReady=$false }
-    }
-    if($engineReady){
-        Write-Host '  Docker executable and engine are available.' -ForegroundColor Green
-        if($desktop){
-            try { Start-Process -FilePath $dockerPath -WorkingDirectory (Split-Path -Parent $dockerPath) -ErrorAction Stop;Write-Host '  Docker Desktop opened.' -ForegroundColor Green;return $true }
-            catch { Write-Host ("  Docker Desktop could not be opened: {0}" -f $_.Exception.Message) -ForegroundColor Red;return $false }
-        }
-        Write-Host ("  Docker CLI: {0}" -f $dockerCli.Source) -ForegroundColor Cyan
-        return $true
-    }
-    if($desktop){
-        try { Start-Process -FilePath $dockerPath -WorkingDirectory (Split-Path -Parent $dockerPath) -ErrorAction Stop;Write-Host '  Docker Desktop opened. The engine was not running; DevKey did not enable or reconfigure services.' -ForegroundColor Yellow;return $true }
-        catch { Write-Host ("  Docker Desktop could not be opened: {0}" -f $_.Exception.Message) -ForegroundColor Red;return $false }
-    }
-    if(-not $dockerCli){Write-Host '  Docker executable was found, but docker.exe is not available to check the engine.' -ForegroundColor Yellow}
-    else{Write-Host '  Docker CLI is installed, but the engine is not responding. Start Docker Desktop or its configured engine, then try again.' -ForegroundColor Yellow}
-    return $false
 }
 function Confirm-DevKeyOperationalIntegrity {
     $status=Get-DevKeyIntegrityStatus
@@ -207,7 +116,7 @@ Write-DevKeyLog -Log access.log -Level AUDIT -Message 'Sesion DevKey iniciada.'
 try {
     while($true){
         Show-DevKeyFrame
-        $option=Read-Host 'Select an option'
+        $option=Read-Host 'Selecciona una opción'
         if(-not(Test-DevKeyPhysicalToken)){Write-Host 'La unidad o el token ya no estan disponibles. La sesion se interrumpe.' -ForegroundColor Yellow;Write-DevKeyLog -Log guardian.log -Level AUDIT -Message 'Token lost while main menu was active.';break}
         try {
             switch($option){
@@ -219,7 +128,7 @@ try {
                 '6' { Show-DevKeySecurityMenu }
                 '7' { Show-DevKeySystemInfo }
                 '0' { break }
-                default { Write-Host 'Invalid selection. Choose one of the listed options.' -ForegroundColor Yellow;Start-Sleep -Seconds 1 }
+                default { Write-Host 'Opción no válida. Selecciona una de las opciones indicadas.' -ForegroundColor Yellow;Start-Sleep -Seconds 1 }
             }
         } catch {
             Write-DevKeyLog -Level ERROR -Message ('Menu option '+$option+': '+$_.Exception.GetType().Name)
